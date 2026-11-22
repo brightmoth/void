@@ -30,3 +30,113 @@ command -v pipewire-pulse
 ls -l ~/.config/pipewire/pipewire.conf.d/
 pgrep -a 'pipewire|wireplumber'
 xbps-query -f pipewire | grep -E 'pipewire-pulse|20-pipewire-pulse'
+
+# Fixing PipeWire Audio on Void Linux (KDE Plasma / Non-Systemd)
+
+This guide documents how to set up and troubleshoot **PipeWire**, **WirePlumber**, and **pipewire-pulse** on **Void Linux**, including workarounds for missing ALSA SPA plugins and `RTKit` / `RLIMIT_RTTIME` `SIGKILL` crashes in PipeWire `1.6.10`.
+
+---
+
+## 1. Install Required Packages
+
+Install PipeWire, WirePlumber, PulseAudio compatibility, ALSA integration, and the SPA hardware plugins (`libspa-alsa` is required for sound card detection):
+
+```bash
+sudo xbps-install -S pipewire wireplumber pipewire-pulse alsa-pipewire libspa-alsa libspa-bluetooth
+```
+
+### Link ALSA Configuration
+Route standard ALSA applications through PipeWire:
+
+```bash
+sudo mkdir -p /etc/alsa/conf.d
+sudo ln -sf /usr/share/alsa/alsa.conf.d/50-pipewire.conf /etc/alsa/conf.d/
+sudo ln -sf /usr/share/alsa/alsa.conf.d/99-pipewire-default.conf /etc/alsa/conf.d/
+```
+
+---
+
+## 2. Configure PipeWire to Launch WirePlumber & PipeWire-Pulse
+
+On Void Linux, starting `pipewire` alone can automatically spawn `wireplumber` and `pipewire-pulse` via drop-in configs in `~/.config/pipewire/pipewire.conf.d/`:
+
+```bash
+mkdir -p ~/.config/pipewire/pipewire.conf.d
+
+ln -sf /usr/share/examples/pipewire/10-wireplumber.conf ~/.config/pipewire/pipewire.conf.d/
+ln -sf /usr/share/examples/pipewire/20-pipewire-pulse.conf ~/.config/pipewire/pipewire.conf.d/
+```
+
+*(Note: If those example files are in `/usr/share/pipewire/pipewire.conf.d/` on your system, link from there instead.)*
+
+---
+
+## 3. Fix `SIGKILL` / `RLIMIT_RTTIME` & D-Bus Assertion Crashes
+
+### Problem
+On non-systemd distributions like Void Linux:
+1. When `rtkit` grants realtime (`SCHED_RR`) priority to PipeWire threads, the Linux kernel enforces a strict `RLIMIT_RTTIME` watchdog. When opening an audio stream or switching sinks, PipeWire can exceed this limit and get silently killed (`SIGKILL`) by the kernel with no `dmesg` output.
+2. Setting `rtkit.enabled = false` in PipeWire `1.6.10` triggers a D-Bus assertion crash (`assertion "path != NULL" failed` in `dbus_message_new_method_call`).
+
+### Solution
+Disable `module-rt` cleanly in both `pipewire.conf.d` and `pipewire-pulse.conf.d` so PipeWire avoids `RLIMIT_RTTIME` kills and the `module-rt` D-Bus bug:
+
+```bash
+mkdir -p ~/.config/pipewire/pipewire.conf.d ~/.config/pipewire/pipewire-pulse.conf.d
+
+cat << 'EOF' > ~/.config/pipewire/pipewire.conf.d/10-rt.conf
+context.properties = {
+    module.rt = false
+}
+EOF
+
+cp ~/.config/pipewire/pipewire.conf.d/10-rt.conf ~/.config/pipewire/pipewire-pulse.conf.d/10-rt.conf
+```
+
+*(Alternative: If you want to keep `module-rt` loaded without realtime threads, set `rt.prio = 0` inside `libpipewire-module-rt` args instead.)*
+
+---
+
+## 4. Autostart on Login (KDE Plasma / Desktop Environments)
+
+Enable XDG autostart for `pipewire.desktop` **only** (since `pipewire` spawns `wireplumber` and `pipewire-pulse` via the configs from Step 2):
+
+```bash
+mkdir -p ~/.config/autostart
+ln -sf /usr/share/applications/pipewire.desktop ~/.config/autostart/
+```
+
+> **Warning:** Do **not** also symlink `wireplumber.desktop` or `pipewire-pulse.desktop` into `~/.config/autostart/`, or duplicate instances will collide over `/run/user/$UID/pipewire-0` and `/run/user/$UID/pulse/native`.
+
+---
+
+## 5. Restart & Verify Audio
+
+### Clean Restart
+Stop any leftover instances, clear stale sockets, and start PipeWire:
+
+```bash
+pkill -u "\$USER" -x 'pipewire|wireplumber'
+rm -f "/run/user/(id -u)/pulse/native" "/run/user/(id -u)"/pipewire-0*
+pipewire &
+```
+
+### Check Devices & Set Default Output
+List detected sinks and sources:
+
+```bash
+wpctl status
+```
+
+Set your preferred output device (replace `<SINK_ID>` with the numeric ID listed under **Audio -> Sinks**):
+
+```bash
+wpctl set-default <SINK_ID>
+```
+
+### Test Playback
+Verify left and right audio channels:
+
+```bash
+speaker-test -c 2 -t wav -l 1
+```
