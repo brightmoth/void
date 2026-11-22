@@ -1,0 +1,32 @@
+PipeWire/KDE audio troubleshooting summary
+
+The initial problem was that PipeWire wasn’t running in your KDE session. wpctl status returned “Could not connect to PipeWire.” Starting pipewire in the background made wpctl status work and showed your audio devices, so the core PipeWire server and WirePlumber were running.
+
+The KDE taskbar audio controls also need PipeWire’s PulseAudio-compatible server. On Void, pipewire-pulse is not a separate package; the pipewire package is expected to provide it. You created the config link:
+sh
+
+~/.config/pipewire/pipewire.conf.d/20-pipewire-pulse.conf
+
+It points to:
+sh
+
+/usr/share/examples/pipewire/20-pipewire-pulse.conf
+
+The link exists, but pactl info still returned Connection refused. That means the PulseAudio-compatible server wasn’t listening when you tested—not that the link was missing. The next test suggested was:
+sh
+
+pipewire-pulse &
+sleep 2
+pactl info
+
+If that works, pactl info should report PulseAudio (on PipeWire). For a lasting fix, investigate why the server doesn’t start automatically with your KDE login, and check that your installed pipewire package contains the executable and example config.
+
+Useful checks to run when the problem recurs:
+sh
+
+wpctl status
+pactl info
+command -v pipewire-pulse
+ls -l ~/.config/pipewire/pipewire.conf.d/
+pgrep -a 'pipewire|wireplumber'
+xbps-query -f pipewire | grep -E 'pipewire-pulse|20-pipewire-pulse'
